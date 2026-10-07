@@ -1,0 +1,12 @@
+# נתונים אישיים לדוגמה — לא לפרסם בריפו ציבורי
+*.pdf
+*.jpg
+*.jpeg
+*.png
+!icons/*.svg
+
+# תלויות / זבל מערכת
+node_modules/
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Calendary — ניהול זמן ושתילת אירועים</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/icon.svg" />
+  <link rel="stylesheet" href="css/styles.css" />
+  <!-- ספריות צד-שלישי (נשמרות ל-offline ע"י ה-Service Worker) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/dexie@4.0.8/dist/dexie.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🗓️</span>
+      <div>
+        <h1>Calendary</h1>
+        <p class="tagline">ניהול זמן ושתילת אירועים</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <span id="conflictBadge" class="badge badge-danger hidden" title="התנגשויות פעילות">0</span>
+      <span id="pendingBadge" class="badge badge-warn hidden" title="ממתינים לאישור">0</span>
+    </div>
+  </header>
+
+  <nav class="tabbar" id="tabbar">
+    <button class="tab active" data-screen="calendar"><span>📅</span>לוח</button>
+    <button class="tab" data-screen="pending"><span>✅</span>אישורים</button>
+    <button class="tab" data-screen="import"><span>📥</span>ייבוא</button>
+    <button class="tab" data-screen="contacts"><span>👥</span>מקרא</button>
+    <button class="tab" data-screen="settings"><span>⚙️</span>הגדרות</button>
+  </nav>
+
+  <main id="app">
+    <!-- מסך לוח -->
+    <section class="screen active" id="screen-calendar">
+      <div class="screen-head">
+        <h2>לוח שנה</h2>
+        <button class="btn btn-primary" id="btnAddEvent">+ אירוע חדש</button>
+      </div>
+      <div id="legendBar" class="legend-bar"></div>
+      <div id="calendar"></div>
+    </section>
+
+    <!-- מסך אישורים -->
+    <section class="screen" id="screen-pending">
+      <div class="screen-head">
+        <h2>ממתינים לאישור</h2>
+        <div class="bulk-actions">
+          <button class="btn btn-ghost" id="btnApproveAll">אשר הכל</button>
+          <button class="btn btn-ghost btn-danger" id="btnRejectAll">דחה הכל</button>
+        </div>
+      </div>
+      <p class="hint">אירועים שחולצו מקבצים מוצגים כאן. אשרו, ערכו או דחו — שום דבר לא נכנס ללוח ללא אישור.</p>
+      <div id="pendingList" class="card-list"></div>
+    </section>
+
+    <!-- מסך ייבוא -->
+    <section class="screen" id="screen-import">
+      <div class="screen-head"><h2>ייבוא קבצים</h2></div>
+      <div class="dropzone" id="dropzone">
+        <p class="dz-title">גררו לכאן קובץ, או</p>
+        <label class="btn btn-primary">
+          בחרו קובץ
+          <input type="file" id="fileInput" accept=".pdf,.docx,image/*" multiple hidden />
+        </label>
+        <p class="hint">נתמך: PDF · DOCX · תמונה (צילום מסך). החילוץ דורש מפתח API (Gemini/Claude) בהגדרות.</p>
+      </div>
+      <div id="importStatus" class="import-status"></div>
+      <h3 class="section-title">קבצים שעובדו</h3>
+      <div id="filesList" class="card-list"></div>
+    </section>
+
+    <!-- מסך מקרא/אנשי קשר -->
+    <section class="screen" id="screen-contacts">
+      <div class="screen-head">
+        <h2>מקרא / אנשי קשר</h2>
+        <button class="btn btn-primary" id="btnAddContact">+ קוד חדש</button>
+      </div>
+      <p class="hint">מיפוי קודים (כמו HHO, RTT) לשם ולטלפון — משמש לפענוח אוטומטי בעת חילוץ.</p>
+      <div id="contactsList" class="card-list"></div>
+    </section>
+
+    <!-- מסך הגדרות -->
+    <section class="screen" id="screen-settings">
+      <div class="screen-head"><h2>הגדרות</h2></div>
+      <div class="settings-group">
+        <label>ספק חילוץ
+          <select id="setProvider">
+            <option value="gemini">Google Gemini (חינמי)</option>
+            <option value="claude">Anthropic Claude</option>
+          </select>
+        </label>
+
+        <label>מפתח API
+          <input type="password" id="setApiKey" placeholder="מפתח לפי הספק" autocomplete="off" />
+        </label>
+        <small class="hint" id="apiKeyHint">נשמר מקומית במכשיר בלבד. נדרש רק לחילוץ אוטומטי מקבצים.</small>
+
+        <label>מודל
+          <select id="setModel"></select>
+        </label>
+
+        <label>כתובת Proxy (אופציונלי)
+          <input type="text" id="setProxy" placeholder="ריק = קריאה ישירה ל-Anthropic" />
+        </label>
+        <small class="hint">אם תרצו לנתב דרך שרת ביניים במקום קריאה ישירה מהדפדפן.</small>
+
+        <button class="btn btn-primary" id="btnSaveSettings">שמירה</button>
+        <span id="settingsSaved" class="saved-msg hidden">נשמר ✓</span>
+      </div>
+
+      <div class="settings-group danger-zone">
+        <h3>נתונים</h3>
+        <button class="btn btn-ghost" id="btnExport">ייצוא גיבוי (JSON)</button>
+        <label class="btn btn-ghost">ייבוא גיבוי<input type="file" id="importBackup" accept=".json" hidden /></label>
+        <button class="btn btn-ghost btn-danger" id="btnClearAll">מחיקת כל הנתונים</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- מודאל אירוע -->
+  <div class="modal-overlay hidden" id="eventModal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3 id="eventModalTitle">אירוע חדש</h3>
+        <button class="icon-btn" id="eventModalClose">✕</button>
+      </div>
+      <form id="eventForm" class="modal-body">
+        <input type="hidden" id="ev-id" />
+        <label>כותרת<input type="text" id="ev-title" required /></label>
+        <label>קטגוריה
+          <select id="ev-category"></select>
+        </label>
+        <div class="row">
+          <label>התחלה<input type="datetime-local" id="ev-start" required /></label>
+          <label>סיום<input type="datetime-local" id="ev-end" required /></label>
+        </div>
+        <label class="checkbox"><input type="checkbox" id="ev-allday" /> יום שלם</label>
+        <div class="row">
+          <label>מיקום<input type="text" id="ev-location" /></label>
+          <label>קוד/משובץ<input type="text" id="ev-assignee" list="assigneeCodes" /></label>
+        </div>
+        <datalist id="assigneeCodes"></datalist>
+        <div id="ev-conflicts" class="conflict-warn hidden"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost btn-danger hidden" id="ev-delete">מחיקה</button>
+          <button type="submit" class="btn btn-primary">שמירה</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

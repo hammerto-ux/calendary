@@ -1,0 +1,26 @@
+{
+  "name": "Calendary — ניהול זמן ושתילת אירועים",
+  "short_name": "Calendary",
+  "description": "לוח שנה ייעודי לניהול פעילויות ומניעת התנגשויות, עם ייבוא אוטומטי מקבצים.",
+  "lang": "he",
+  "dir": "rtl",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ],
+  "share_target": {
+    "action": "share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        { "name": "file", "accept": ["image/*", "application/pdf", ".docx", ".pdf"] }
+      ]
+    }
+  }
+}

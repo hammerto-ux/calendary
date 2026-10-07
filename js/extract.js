@@ -1,0 +1,189 @@
+// חילוץ אירועים מקבצים באמצעות Claude API (ראייה + טקסט).
+// PDF -> רינדור עמודים לתמונות (pdf.js) + טקסט. DOCX -> טקסט (mammoth). תמונה -> ישירות.
+import { getSetting } from './db.js';
+
+const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+const PDF_JS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.5.136/build/pdf.min.mjs';
+const PDF_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.5.136/build/pdf.worker.min.mjs';
+const MAX_PDF_PAGES = 8;
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1]);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+async function pdfToImages(file) {
+  const pdfjs = await import(PDF_JS);
+  pdfjs.GlobalWorkerOptions.workerSrc = PDF_WORKER;
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjs.getDocument({ data: buf }).promise;
+  const images = [];
+  let text = '';
+  const n = Math.min(pdf.numPages, MAX_PDF_PAGES);
+  for (let i = 1; i <= n; i++) {
+    const page = await pdf.getPage(i);
+    const viewport = page.getViewport({ scale: 2 });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width; canvas.height = viewport.height;
+    const ctx = canvas.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    images.push(canvas.toDataURL('image/png').split(',')[1]);
+    try {
+      const tc = await page.getTextContent();
+      text += tc.items.map(it => it.str).join(' ') + '\n';
+    } catch { /* ignore text layer errors */ }
+  }
+  return { images, text, pages: pdf.numPages };
+}
+
+function buildPrompt(extraText) {
+  const today = new Date().toISOString().slice(0, 10);
+  return `אתה מחלץ אירועי לוח-שנה מתוך מסמך לוח זמנים (משמרות / מערכת שעות / סידור).
+התאריך היום: ${today}. אזור זמן: Asia/Jerusalem.
+
+הפק אך ורק JSON תקין במבנה:
+{
+  "events": [
+    {
+      "title": "כותרת קצרה",
+      "category": "shift|class|exam_lifeguard|reserve|course_pending|hike|holiday|handover|personal|other",
+      "start": "YYYY-MM-DDTHH:MM:00",   // זמן מקומי, ללא אזור-זמן
+      "end":   "YYYY-MM-DDTHH:MM:00",
+      "allDay": false,
+      "location": "אם מופיע",
+      "assigneeCode": "קוד כמו HHO/RTT אם מופיע",
+      "rawText": "הטקסט המקורי של התא",
+      "confidence": 0.0-1.0
+    }
+  ],
+  "contacts": [ { "code": "HHO", "name": "שם מלא", "phone": "טלפון" } ]
+}
+
+כללים:
+- הסק את החודש/השנה מכותרת המסמך (למשל "September 2026" או "מחזור 6 שנה א 26-27"). אם השנה חסרה, השתמש בשנה הקרובה ביותר להיום.
+- טווח שעות "09:00 - 14:00" => start ו-end באותו יום.
+- כל תא יכול להכיל כמה פעילויות (שורות שונות) — הפק אירוע לכל אחת.
+- "חפיפה" משמעותה מתלמד שמגיע לצל; סווג אותה category="handover".
+- "מילואים" => category="reserve". "בחינת/בחינות מצילים" => category="exam_lifeguard". "קורס בהמתנה" => category="course_pending".
+- חגים/מועדים (ראש השנה, יום כיפור, ערב חג, שבת) => category="holiday", allDay=true אם אין שעות.
+- אם יש מקרא (טבלת קודים -> שם -> טלפון) הפק אותו למערך contacts.
+- אל תמציא נתונים. אם שדה חסר, השמט אותו או הורד confidence.
+- החזר JSON בלבד, ללא טקסט נוסף וללא code fences.
+${extraText ? `\nטקסט שחולץ מהמסמך (עזר):\n"""${extraText.slice(0, 6000)}"""` : ''}`;
+}
+
+function parseJson(text) {
+  if (!text) throw new Error('תשובה ריקה מהמודל');
+  let t = text.trim().replace(/^```(json)?/i, '').replace(/```$/,'').trim();
+  const start = t.indexOf('{'); const end = t.lastIndexOf('}');
+  if (start >= 0 && end > start) t = t.slice(start, end + 1);
+  return JSON.parse(t);
+}
+
+const DEFAULT_MODEL = { claude: 'claude-sonnet-5', gemini: 'gemini-2.0-flash' };
+
+// ממשק ראשי: מקבל File -> מחזיר { events:[], contacts:[], meta:{} }
+export async function extractFromFile(file, onProgress = () => {}) {
+  const provider = await getSetting('provider', 'gemini');
+  const apiKey = await getSetting('apiKey', '');
+  let model = await getSetting('model', '');
+  if (!model) model = DEFAULT_MODEL[provider] || DEFAULT_MODEL.gemini;
+  const proxyUrl = await getSetting('proxyUrl', '');
+  if (!apiKey && !proxyUrl) {
+    throw new Error('חסר מפתח API. הוסיפו אותו במסך ההגדרות.');
+  }
+
+  const type = file.type || '';
+  let images = [], extraText = '';
+
+  if (type.startsWith('image/')) {
+    onProgress('מעבד תמונה…');
+    const b64 = await fileToBase64(file);
+    // ממירים ל-PNG אחיד ע"י שליחה כפי שהוא — הקוד מטה מצפה ל-image/png; לכן נעטוף.
+    images = [b64];
+  } else if (type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+    onProgress('מרנדר עמודי PDF…');
+    const r = await pdfToImages(file);
+    images = r.images; extraText = r.text;
+  } else if (file.name.toLowerCase().endsWith('.docx')) {
+    onProgress('קורא DOCX…');
+    const buf = await file.arrayBuffer();
+    const r = await window.mammoth.extractRawText({ arrayBuffer: buf });
+    extraText = r.value || '';
+  } else {
+    throw new Error('סוג קובץ לא נתמך. נתמך: PDF, DOCX, תמונה.');
+  }
+
+  onProgress(`שולח ל-${provider === 'gemini' ? 'Gemini' : 'Claude'} לחילוץ…`);
+  const prompt = buildPrompt(extraText);
+  const mediaType = type.startsWith('image/') ? type : 'image/png';
+  const rawText = provider === 'gemini'
+    ? await callGemini({ apiKey, model, proxyUrl, mediaType, images, prompt })
+    : await callClaude({ apiKey, model, proxyUrl, mediaType, images, prompt });
+  const parsed = parseJson(rawText);
+  return {
+    events: Array.isArray(parsed.events) ? parsed.events : [],
+    contacts: Array.isArray(parsed.contacts) ? parsed.contacts : [],
+    meta: { pages: undefined },
+  };
+}
+
+// --- Claude (Anthropic) ---
+async function callClaude({ apiKey, model, proxyUrl, mediaType, images, prompt }) {
+  const content = [];
+  for (const b64 of images) {
+    content.push({ type: 'image', source: { type: 'base64', media_type: mediaType, data: b64 } });
+  }
+  content.push({ type: 'text', text: prompt });
+
+  const url = proxyUrl && proxyUrl.trim() ? proxyUrl.trim() : ANTHROPIC_URL;
+  const headers = { 'content-type': 'application/json' };
+  if (!proxyUrl) {
+    headers['x-api-key'] = apiKey;
+    headers['anthropic-version'] = '2023-06-01';
+    headers['anthropic-dangerous-direct-browser-access'] = 'true';
+  }
+  const res = await fetch(url, {
+    method: 'POST', headers,
+    body: JSON.stringify({ model, max_tokens: 4096, messages: [{ role: 'user', content }] }),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`שגיאת Claude (${res.status}): ${t.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  return (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
+}
+
+// --- Gemini (Google AI Studio) ---
+async function callGemini({ apiKey, model, proxyUrl, mediaType, images, prompt }) {
+  const parts = [];
+  for (const b64 of images) {
+    parts.push({ inline_data: { mime_type: mediaType, data: b64 } });
+  }
+  parts.push({ text: prompt });
+
+  const url = proxyUrl && proxyUrl.trim()
+    ? proxyUrl.trim()
+    : `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+  const headers = { 'content-type': 'application/json' };
+  if (!proxyUrl) headers['x-goog-api-key'] = apiKey; // המפתח בכותרת, לא ב-URL
+  const res = await fetch(url, {
+    method: 'POST', headers,
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts }],
+      generationConfig: { temperature: 0, maxOutputTokens: 8192, responseMimeType: 'application/json' },
+    }),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`שגיאת Gemini (${res.status}): ${t.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const cand = data.candidates && data.candidates[0];
+  return (cand?.content?.parts || []).map(p => p.text || '').join('');
+}
