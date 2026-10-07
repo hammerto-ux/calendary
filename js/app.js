@@ -325,6 +325,7 @@ async function loadSettings() {
   $('#setProvider').value = provider;
   populateModels(provider, await db.getSetting('model', ''));
   $('#setApiKey').value = await db.getSetting('apiKey', '');
+  $('#setClaudeWs').value = await db.getSetting('claudeWorkspaceId', '');
   $('#setMyAliases').value = await db.getSetting('myAliases', '');
   $('#setProxy').value = await db.getSetting('proxyUrl', '');
 }
@@ -332,6 +333,7 @@ $('#setProvider').addEventListener('change', () => populateModels($('#setProvide
 $('#btnSaveSettings').onclick = async () => {
   await db.setSetting('provider', $('#setProvider').value);
   await db.setSetting('apiKey', $('#setApiKey').value.trim());
+  await db.setSetting('claudeWorkspaceId', $('#setClaudeWs').value.trim());
   await db.setSetting('model', $('#setModel').value.trim());
   await db.setSetting('myAliases', $('#setMyAliases').value.trim());
   await db.setSetting('proxyUrl', $('#setProxy').value.trim());

@@ -101,6 +101,7 @@ export async function extractFromFile(file, onProgress = () => {}) {
   let model = await getSetting('model', '');
   if (!model || RETIRED_MODELS.has(model)) model = DEFAULT_MODEL[provider] || DEFAULT_MODEL.gemini;
   const proxyUrl = await getSetting('proxyUrl', '');
+  const workspaceId = await getSetting('claudeWorkspaceId', '');
   const aliases = (await getSetting('myAliases', '')).split(',').map(s => s.trim()).filter(Boolean);
   if (!apiKey && !proxyUrl) {
     throw new Error('חסר מפתח API. הוסיפו אותו במסך ההגדרות.');
@@ -132,7 +133,7 @@ export async function extractFromFile(file, onProgress = () => {}) {
   const mediaType = type.startsWith('image/') ? type : 'image/png';
   const rawText = provider === 'gemini'
     ? await callGemini({ apiKey, model, proxyUrl, mediaType, images, prompt, onProgress })
-    : await callClaude({ apiKey, model, proxyUrl, mediaType, images, prompt, onProgress });
+    : await callClaude({ apiKey, model, proxyUrl, workspaceId, mediaType, images, prompt, onProgress });
   const parsed = parseJson(rawText);
   let events = Array.isArray(parsed.events) ? parsed.events : [];
 
@@ -181,7 +182,7 @@ function backoff(attempt, onProgress, label) {
 }
 
 // --- Claude (Anthropic) ---
-async function callClaude({ apiKey, model, proxyUrl, mediaType, images, prompt, onProgress }) {
+async function callClaude({ apiKey, model, proxyUrl, workspaceId, mediaType, images, prompt, onProgress }) {
   const content = [];
   for (const b64 of images) {
     content.push({ type: 'image', source: { type: 'base64', media_type: mediaType, data: b64 } });
@@ -194,6 +195,7 @@ async function callClaude({ apiKey, model, proxyUrl, mediaType, images, prompt, 
     headers['x-api-key'] = apiKey;
     headers['anthropic-version'] = '2023-06-01';
     headers['anthropic-dangerous-direct-browser-access'] = 'true';
+    if (workspaceId && workspaceId.trim()) headers['anthropic-workspace-id'] = workspaceId.trim();
   }
   const res = await postWithRetry(url, {
     method: 'POST', headers,
