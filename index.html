@@ -104,7 +104,8 @@
         <small class="hint" id="apiKeyHint">נשמר מקומית במכשיר בלבד. נדרש רק לחילוץ אוטומטי מקבצים.</small>
 
         <label>מודל
-          <select id="setModel"></select>
+          <input type="text" id="setModel" list="modelList" placeholder="gemini-3.8-flash" autocomplete="off" />
+          <datalist id="modelList"></datalist>
         </label>
 
         <label>כתובת Proxy (אופציונלי)

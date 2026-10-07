@@ -304,18 +304,20 @@ async function editContact(c = null) {
 
 // ---------- Settings ----------
 const MODELS = {
-  gemini: [['gemini-2.0-flash','gemini-2.0-flash (מומלץ)'], ['gemini-2.5-flash','gemini-2.5-flash'], ['gemini-1.5-flash','gemini-1.5-flash']],
+  gemini: [['gemini-3.8-flash','gemini-3.8-flash (מומלץ)'], ['gemini-3.8-pro','gemini-3.8-pro (מדויק יותר)']],
   claude: [['claude-sonnet-5','claude-sonnet-5 (מומלץ)'], ['claude-opus-5','claude-opus-5'], ['claude-haiku-4-5','claude-haiku-4-5']],
 };
+const RETIRED_MODELS = new Set(['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.5-flash']);
 const KEY_HINT = {
   gemini: 'מפתח חינמי מ-aistudio.google.com (Get API key) — שונה מאפליקציית Gemini. נשמר מקומית בלבד.',
   claude: 'מפתח מ-console.anthropic.com. נשמר מקומית בלבד.',
 };
 function populateModels(provider, selected) {
-  const sel = $('#setModel');
   const opts = MODELS[provider] || MODELS.gemini;
-  sel.innerHTML = opts.map(([v,l]) => `<option value="${v}">${l}</option>`).join('');
-  if (selected && opts.some(([v]) => v === selected)) sel.value = selected;
+  $('#modelList').innerHTML = opts.map(([v,l]) => `<option value="${v}">${l}</option>`).join('');
+  const input = $('#setModel');
+  input.value = (selected && !RETIRED_MODELS.has(selected)) ? selected : opts[0][0];
+  input.placeholder = opts[0][0];
   $('#apiKeyHint').textContent = KEY_HINT[provider] || KEY_HINT.gemini;
 }
 async function loadSettings() {
@@ -329,7 +331,7 @@ $('#setProvider').addEventListener('change', () => populateModels($('#setProvide
 $('#btnSaveSettings').onclick = async () => {
   await db.setSetting('provider', $('#setProvider').value);
   await db.setSetting('apiKey', $('#setApiKey').value.trim());
-  await db.setSetting('model', $('#setModel').value);
+  await db.setSetting('model', $('#setModel').value.trim());
   await db.setSetting('proxyUrl', $('#setProxy').value.trim());
   const m = $('#settingsSaved'); m.classList.remove('hidden'); setTimeout(()=>m.classList.add('hidden'), 1800);
 };

@@ -84,14 +84,16 @@ function parseJson(text) {
   return JSON.parse(t);
 }
 
-const DEFAULT_MODEL = { claude: 'claude-sonnet-5', gemini: 'gemini-2.0-flash' };
+const DEFAULT_MODEL = { claude: 'claude-sonnet-5', gemini: 'gemini-3.8-flash' };
+// מודלים שהוצאו משימוש — יוחלפו אוטומטית בברירת המחדל העדכנית.
+export const RETIRED_MODELS = new Set(['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.5-flash']);
 
 // ממשק ראשי: מקבל File -> מחזיר { events:[], contacts:[], meta:{} }
 export async function extractFromFile(file, onProgress = () => {}) {
   const provider = await getSetting('provider', 'gemini');
   const apiKey = await getSetting('apiKey', '');
   let model = await getSetting('model', '');
-  if (!model) model = DEFAULT_MODEL[provider] || DEFAULT_MODEL.gemini;
+  if (!model || RETIRED_MODELS.has(model)) model = DEFAULT_MODEL[provider] || DEFAULT_MODEL.gemini;
   const proxyUrl = await getSetting('proxyUrl', '');
   if (!apiKey && !proxyUrl) {
     throw new Error('חסר מפתח API. הוסיפו אותו במסך ההגדרות.');
