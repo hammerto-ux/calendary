@@ -199,10 +199,14 @@ async function callClaude({ apiKey, model, proxyUrl, workspaceId, mediaType, ima
   }
   const res = await postWithRetry(url, {
     method: 'POST', headers,
-    body: JSON.stringify({ model, max_tokens: 4096, messages: [{ role: 'user', content }] }),
+    body: JSON.stringify({ model, max_tokens: 8192, messages: [{ role: 'user', content }] }),
   }, { label: 'Claude', onProgress });
   const data = await res.json();
-  return (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
+  const text = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
+  if (!text) {
+    throw new Error(`Claude החזיר תשובה ריקה (stop_reason=${data.stop_reason || '?'}, model=${data.model || '?'}): ${JSON.stringify(data).slice(0, 250)}`);
+  }
+  return text;
 }
 
 // --- Gemini (Google AI Studio) ---
