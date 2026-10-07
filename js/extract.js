@@ -78,7 +78,7 @@ function buildPrompt(extraText, aliases = []) {
 - חגים/מועדים (ראש השנה, יום כיפור, ערב חג, שבת) => category="holiday", allDay=true אם אין שעות.
 - אם יש מקרא (טבלת קודים -> שם -> טלפון) הפק אותו למערך contacts.
 - אל תמציא נתונים. אם שדה חסר, השמט אותו או הורד confidence.
-- החזר JSON בלבד, ללא טקסט נוסף וללא code fences.
+- החזר JSON דחוס (minified) בלבד — בלי רווחים/שורות מיותרים, בלי טקסט נוסף ובלי code fences.${aliases.length ? '\n- חשוב לקיצור: אל תכלול כלל אירועים של אחרים — רק של המשתמש.' : ''}
 ${extraText ? `\nטקסט שחולץ מהמסמך (עזר):\n"""${extraText.slice(0, 6000)}"""` : ''}`;
 }
 
@@ -88,6 +88,36 @@ function parseJson(text) {
   const start = t.indexOf('{'); const end = t.lastIndexOf('}');
   if (start >= 0 && end > start) t = t.slice(start, end + 1);
   return JSON.parse(t);
+}
+
+// הצלת אירועים מתוך JSON שנקטע: אוסף אובייקטים שלמים מתוך מערך "events".
+function extractBalancedObjects(s) {
+  const out = []; let depth = 0, start = -1, inStr = false, esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') inStr = false; continue; }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{') { if (depth === 0) start = i; depth++; }
+    else if (ch === '}') { depth--; if (depth === 0 && start >= 0) { try { out.push(JSON.parse(s.slice(start, i + 1))); } catch {} start = -1; } }
+  }
+  return out;
+}
+function salvageEvents(text) {
+  if (!text) return [];
+  const key = text.indexOf('"events"');
+  const arrStart = key >= 0 ? text.indexOf('[', key) : text.indexOf('[');
+  if (arrStart < 0) return [];
+  return extractBalancedObjects(text.slice(arrStart + 1))
+    .filter(o => o && (o.title || o.start || o.rawText)); // רק אובייקטים שנראים כאירוע
+}
+// פענוח סובלני: מנסה פענוח מלא, ואם נכשל (תשובה חתוכה) — מציל אירועים שלמים.
+function parseResult(text) {
+  try { return { ...parseJson(text), _salvaged: false }; }
+  catch (e) {
+    const events = salvageEvents(text.replace(/^```(json)?/i, '').trim());
+    if (events.length) return { events, contacts: [], _salvaged: true };
+    throw e;
+  }
 }
 
 const DEFAULT_MODEL = { claude: 'claude-sonnet-5', gemini: 'gemini-3.8-flash' };
@@ -134,7 +164,8 @@ export async function extractFromFile(file, onProgress = () => {}) {
   const rawText = provider === 'gemini'
     ? await callGemini({ apiKey, model, proxyUrl, mediaType, images, prompt, onProgress })
     : await callClaude({ apiKey, model, proxyUrl, workspaceId, mediaType, images, prompt, onProgress });
-  const parsed = parseJson(rawText);
+  const parsed = parseResult(rawText);
+  if (parsed._salvaged) onProgress('התשובה נקטעה — חולצו האירועים השלמים בלבד');
   let events = Array.isArray(parsed.events) ? parsed.events : [];
 
   // רשת ביטחון: אם הוגדרה זהות אישית, סנן אירועים ששויכו במפורש למישהו אחר.
