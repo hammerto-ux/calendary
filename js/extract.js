@@ -234,10 +234,16 @@ async function callClaude({ apiKey, model, proxyUrl, workspaceId, mediaType, ima
     headers['anthropic-dangerous-direct-browser-access'] = 'true';
     if (workspaceId && workspaceId.trim()) headers['anthropic-workspace-id'] = workspaceId.trim();
   }
-  const res = await postWithRetry(url, {
-    method: 'POST', headers,
-    body: JSON.stringify({ model, max_tokens: 8192, messages: [{ role: 'user', content }] }),
-  }, { label: 'Claude', onProgress });
+  const send = (body) => postWithRetry(url, { method: 'POST', headers, body: JSON.stringify(body) }, { label: 'Claude', onProgress });
+  const base = { model, max_tokens: 8192, messages: [{ role: 'user', content }] };
+  let res;
+  try {
+    // מכבים "חשיבה מורחבת" כדי שכל תקציב הטוקנים יופנה לתשובה (ולא ייחתך ב-thinking).
+    res = await send({ ...base, thinking: { type: 'disabled' } });
+  } catch (e) {
+    if (/thinking/i.test(e.message)) res = await send(base); // המודל לא מכיר את השדה — בלעדיו
+    else throw e;
+  }
   const data = await res.json();
   const text = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
   if (!text) {
