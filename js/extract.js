@@ -168,14 +168,20 @@ export async function extractFromFile(file, onProgress = () => {}) {
   if (parsed._salvaged) onProgress('התשובה נקטעה — חולצו האירועים השלמים בלבד');
   let events = Array.isArray(parsed.events) ? parsed.events : [];
 
-  // רשת ביטחון: אם הוגדרה זהות אישית, סנן אירועים ששויכו במפורש למישהו אחר.
+  // רשת ביטחון: אם הוגדרה זהות אישית, סנן אירועים ששויכו במפורש למישהו אחר —
+  // אך ורק כשנראה שזה סידור רב-אנשים (יותר מקוד/שם אחד). מערכת שעות כללית
+  // (ללא שיוך, או קוד יחיד) נשארת במלואה.
   if (aliases.length) {
     const up = aliases.map(a => a.toUpperCase());
-    events = events.filter(ev => {
-      const owner = (ev.assigneeCode || '').trim().toUpperCase();
-      if (!owner) return true; // ללא שיוך -> נשאר (למשל מערכת שעות כללית)
-      return up.some(a => owner === a || owner.includes(a) || a.includes(owner));
-    });
+    const owners = new Set(events.map(e => (e.assigneeCode || '').trim().toUpperCase()).filter(Boolean));
+    const looksLikeRoster = owners.size > 1;
+    if (looksLikeRoster) {
+      events = events.filter(ev => {
+        const owner = (ev.assigneeCode || '').trim().toUpperCase();
+        if (!owner) return true; // ללא שיוך -> נשאר
+        return up.some(a => owner === a || owner.includes(a) || a.includes(owner));
+      });
+    }
   }
 
   return {
