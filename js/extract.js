@@ -1,6 +1,6 @@
 // חילוץ אירועים מקבצים באמצעות Claude API (ראייה + טקסט).
 // PDF -> רינדור עמודים לתמונות (pdf.js) + טקסט. DOCX -> טקסט (mammoth). תמונה -> ישירות.
-import { getSetting } from './db.js';
+import { getSetting, setSetting } from './db.js';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const PDF_JS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.5.136/build/pdf.min.mjs';
@@ -204,26 +204,62 @@ async function callClaude({ apiKey, model, proxyUrl, mediaType, images, prompt, 
 }
 
 // --- Gemini (Google AI Studio) ---
+// שולף את רשימת המודלים הזמינים בחשבון שתומכים ב-generateContent.
+async function listGeminiModels(apiKey) {
+  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', {
+    headers: { 'x-goog-api-key': apiKey },
+  });
+  if (!res.ok) throw new Error('list failed');
+  const data = await res.json();
+  return (data.models || [])
+    .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map(m => (m.name || '').replace(/^models\//, ''))
+    .filter(Boolean);
+}
+
 async function callGemini({ apiKey, model, proxyUrl, mediaType, images, prompt, onProgress }) {
   const parts = [];
   for (const b64 of images) {
     parts.push({ inline_data: { mime_type: mediaType, data: b64 } });
   }
   parts.push({ text: prompt });
+  const bodyStr = JSON.stringify({
+    contents: [{ role: 'user', parts }],
+    generationConfig: { temperature: 0, maxOutputTokens: 8192, responseMimeType: 'application/json' },
+  });
 
-  const url = proxyUrl && proxyUrl.trim()
-    ? proxyUrl.trim()
-    : `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-  const headers = { 'content-type': 'application/json' };
-  if (!proxyUrl) headers['x-goog-api-key'] = apiKey; // המפתח בכותרת, לא ב-URL
-  const res = await postWithRetry(url, {
-    method: 'POST', headers,
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts }],
-      generationConfig: { temperature: 0, maxOutputTokens: 8192, responseMimeType: 'application/json' },
-    }),
-  }, { label: 'Gemini', onProgress });
-  const data = await res.json();
-  const cand = data.candidates && data.candidates[0];
-  return (cand?.content?.parts || []).map(p => p.text || '').join('');
+  const tried = new Set();
+  const attempt = async (m, retries) => {
+    tried.add(m);
+    const url = proxyUrl && proxyUrl.trim()
+      ? proxyUrl.trim()
+      : `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`;
+    const headers = { 'content-type': 'application/json' };
+    if (!proxyUrl) headers['x-goog-api-key'] = apiKey; // המפתח בכותרת, לא ב-URL
+    const res = await postWithRetry(url, { method: 'POST', headers, body: bodyStr },
+      { label: `Gemini/${m}`, onProgress, retries });
+    const data = await res.json();
+    const cand = data.candidates && data.candidates[0];
+    return (cand?.content?.parts || []).map(p => p.text || '').join('');
+  };
+
+  try {
+    return await attempt(model, 3);
+  } catch (firstErr) {
+    if (proxyUrl && proxyUrl.trim()) throw firstErr; // דרך proxy אין גילוי מודלים
+    onProgress('המודל עמוס/לא זמין — מחפש מודל חלופי…');
+    let models = [];
+    try { models = await listGeminiModels(apiKey); } catch { throw firstErr; }
+    const candidates = models.filter(m => !tried.has(m) && /flash/i.test(m))
+      .concat(models.filter(m => !tried.has(m) && !/flash/i.test(m)));
+    for (const m of candidates.slice(0, 5)) {
+      try {
+        onProgress(`מנסה מודל ${m}…`);
+        const out = await attempt(m, 1);
+        try { await setSetting('model', m); } catch {} // נשמור את המודל שעבד להבא
+        return out;
+      } catch { /* נסה את הבא */ }
+    }
+    throw firstErr;
+  }
 }
