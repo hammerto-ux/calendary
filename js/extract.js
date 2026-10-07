@@ -131,8 +131,8 @@ export async function extractFromFile(file, onProgress = () => {}) {
   const prompt = buildPrompt(extraText, aliases);
   const mediaType = type.startsWith('image/') ? type : 'image/png';
   const rawText = provider === 'gemini'
-    ? await callGemini({ apiKey, model, proxyUrl, mediaType, images, prompt })
-    : await callClaude({ apiKey, model, proxyUrl, mediaType, images, prompt });
+    ? await callGemini({ apiKey, model, proxyUrl, mediaType, images, prompt, onProgress })
+    : await callClaude({ apiKey, model, proxyUrl, mediaType, images, prompt, onProgress });
   const parsed = parseJson(rawText);
   let events = Array.isArray(parsed.events) ? parsed.events : [];
 
@@ -153,8 +153,35 @@ export async function extractFromFile(file, onProgress = () => {}) {
   };
 }
 
+// POST עם ניסיון חוזר אוטומטי על עומסים זמניים (429/500/502/503/529 / UNAVAILABLE / OVERLOADED).
+const TRANSIENT = new Set([429, 500, 502, 503, 529]);
+async function postWithRetry(url, options, { label, onProgress = () => {}, retries = 4 } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      res = await fetch(url, options);
+    } catch (netErr) {
+      if (attempt >= retries) throw new Error(`שגיאת רשת (${label}): ${netErr.message}`);
+      await backoff(attempt, onProgress, label);
+      continue;
+    }
+    if (res.ok) return res;
+    const body = await res.text().catch(() => '');
+    const transient = TRANSIENT.has(res.status) || /UNAVAILABLE|OVERLOADED|high demand/i.test(body);
+    if (!transient || attempt >= retries) {
+      throw new Error(`שגיאת ${label} (${res.status}): ${body.slice(0, 300)}`);
+    }
+    await backoff(attempt, onProgress, label);
+  }
+}
+function backoff(attempt, onProgress, label) {
+  const waitMs = Math.min(10000, 1200 * Math.pow(2, attempt)) + Math.floor(Math.random() * 600);
+  onProgress(`${label} עמוס — ניסיון חוזר בעוד ${Math.round(waitMs / 1000)} שנ'…`);
+  return new Promise(r => setTimeout(r, waitMs));
+}
+
 // --- Claude (Anthropic) ---
-async function callClaude({ apiKey, model, proxyUrl, mediaType, images, prompt }) {
+async function callClaude({ apiKey, model, proxyUrl, mediaType, images, prompt, onProgress }) {
   const content = [];
   for (const b64 of images) {
     content.push({ type: 'image', source: { type: 'base64', media_type: mediaType, data: b64 } });
@@ -168,20 +195,16 @@ async function callClaude({ apiKey, model, proxyUrl, mediaType, images, prompt }
     headers['anthropic-version'] = '2023-06-01';
     headers['anthropic-dangerous-direct-browser-access'] = 'true';
   }
-  const res = await fetch(url, {
+  const res = await postWithRetry(url, {
     method: 'POST', headers,
     body: JSON.stringify({ model, max_tokens: 4096, messages: [{ role: 'user', content }] }),
-  });
-  if (!res.ok) {
-    const t = await res.text().catch(() => '');
-    throw new Error(`שגיאת Claude (${res.status}): ${t.slice(0, 300)}`);
-  }
+  }, { label: 'Claude', onProgress });
   const data = await res.json();
   return (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
 }
 
 // --- Gemini (Google AI Studio) ---
-async function callGemini({ apiKey, model, proxyUrl, mediaType, images, prompt }) {
+async function callGemini({ apiKey, model, proxyUrl, mediaType, images, prompt, onProgress }) {
   const parts = [];
   for (const b64 of images) {
     parts.push({ inline_data: { mime_type: mediaType, data: b64 } });
@@ -193,17 +216,13 @@ async function callGemini({ apiKey, model, proxyUrl, mediaType, images, prompt }
     : `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const headers = { 'content-type': 'application/json' };
   if (!proxyUrl) headers['x-goog-api-key'] = apiKey; // המפתח בכותרת, לא ב-URL
-  const res = await fetch(url, {
+  const res = await postWithRetry(url, {
     method: 'POST', headers,
     body: JSON.stringify({
       contents: [{ role: 'user', parts }],
       generationConfig: { temperature: 0, maxOutputTokens: 8192, responseMimeType: 'application/json' },
     }),
-  });
-  if (!res.ok) {
-    const t = await res.text().catch(() => '');
-    throw new Error(`שגיאת Gemini (${res.status}): ${t.slice(0, 300)}`);
-  }
+  }, { label: 'Gemini', onProgress });
   const data = await res.json();
   const cand = data.candidates && data.candidates[0];
   return (cand?.content?.parts || []).map(p => p.text || '').join('');
