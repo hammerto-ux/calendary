@@ -40,10 +40,16 @@ async function pdfToImages(file) {
   return { images, text, pages: pdf.numPages };
 }
 
-function buildPrompt(extraText) {
+function buildPrompt(extraText, aliases = []) {
   const today = new Date().toISOString().slice(0, 10);
+  const identity = aliases.length ? `
+
+סינון אישי — חשוב מאוד:
+- המשתמש מזוהה ע"י הקודים/שמות הבאים: ${aliases.map(a => `"${a}"`).join(', ')} (כולל וריאציות כתיב של השם, למשל סדר הפוך או עם/בלי פסיק).
+- אם המסמך הוא סידור המשויך לכמה אנשים (לפי קודים/שמות בכל תא) — חלץ אך ורק את האירועים של המשתמש, והתעלם לחלוטין משיבוצים של אחרים.
+- אם המסמך הוא מערכת כללית ללא שיוך אישי (למשל מערכת שעות של כיתה) — חלץ את כל האירועים.` : '';
   return `אתה מחלץ אירועי לוח-שנה מתוך מסמך לוח זמנים (משמרות / מערכת שעות / סידור).
-התאריך היום: ${today}. אזור זמן: Asia/Jerusalem.
+התאריך היום: ${today}. אזור זמן: Asia/Jerusalem.${identity}
 
 הפק אך ורק JSON תקין במבנה:
 {
@@ -95,6 +101,7 @@ export async function extractFromFile(file, onProgress = () => {}) {
   let model = await getSetting('model', '');
   if (!model || RETIRED_MODELS.has(model)) model = DEFAULT_MODEL[provider] || DEFAULT_MODEL.gemini;
   const proxyUrl = await getSetting('proxyUrl', '');
+  const aliases = (await getSetting('myAliases', '')).split(',').map(s => s.trim()).filter(Boolean);
   if (!apiKey && !proxyUrl) {
     throw new Error('חסר מפתח API. הוסיפו אותו במסך ההגדרות.');
   }
@@ -121,14 +128,26 @@ export async function extractFromFile(file, onProgress = () => {}) {
   }
 
   onProgress(`שולח ל-${provider === 'gemini' ? 'Gemini' : 'Claude'} לחילוץ…`);
-  const prompt = buildPrompt(extraText);
+  const prompt = buildPrompt(extraText, aliases);
   const mediaType = type.startsWith('image/') ? type : 'image/png';
   const rawText = provider === 'gemini'
     ? await callGemini({ apiKey, model, proxyUrl, mediaType, images, prompt })
     : await callClaude({ apiKey, model, proxyUrl, mediaType, images, prompt });
   const parsed = parseJson(rawText);
+  let events = Array.isArray(parsed.events) ? parsed.events : [];
+
+  // רשת ביטחון: אם הוגדרה זהות אישית, סנן אירועים ששויכו במפורש למישהו אחר.
+  if (aliases.length) {
+    const up = aliases.map(a => a.toUpperCase());
+    events = events.filter(ev => {
+      const owner = (ev.assigneeCode || '').trim().toUpperCase();
+      if (!owner) return true; // ללא שיוך -> נשאר (למשל מערכת שעות כללית)
+      return up.some(a => owner === a || owner.includes(a) || a.includes(owner));
+    });
+  }
+
   return {
-    events: Array.isArray(parsed.events) ? parsed.events : [],
+    events,
     contacts: Array.isArray(parsed.contacts) ? parsed.contacts : [],
     meta: { pages: undefined },
   };

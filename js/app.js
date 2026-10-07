@@ -325,6 +325,7 @@ async function loadSettings() {
   $('#setProvider').value = provider;
   populateModels(provider, await db.getSetting('model', ''));
   $('#setApiKey').value = await db.getSetting('apiKey', '');
+  $('#setMyAliases').value = await db.getSetting('myAliases', '');
   $('#setProxy').value = await db.getSetting('proxyUrl', '');
 }
 $('#setProvider').addEventListener('change', () => populateModels($('#setProvider').value));
@@ -332,6 +333,7 @@ $('#btnSaveSettings').onclick = async () => {
   await db.setSetting('provider', $('#setProvider').value);
   await db.setSetting('apiKey', $('#setApiKey').value.trim());
   await db.setSetting('model', $('#setModel').value.trim());
+  await db.setSetting('myAliases', $('#setMyAliases').value.trim());
   await db.setSetting('proxyUrl', $('#setProxy').value.trim());
   const m = $('#settingsSaved'); m.classList.remove('hidden'); setTimeout(()=>m.classList.add('hidden'), 1800);
 };
